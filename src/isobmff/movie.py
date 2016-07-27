@@ -1,6 +1,9 @@
 
 import sys
 import box
+import struct
+import binascii
+import uuid
 
 class MovieHeader(box.FullBox):
     def parse(self, buf):
@@ -102,6 +105,199 @@ class MediaHeader(box.FullBox):
         yield ("timescale", self.timescale)
         yield ("duration", self.duration)
         yield ("language", self.language, parse_iso639_2_15bit(self.language))
+
+class WidevinePsshBox():
+
+    def __init__(self, pssh_payload):
+        pssh_index = 0
+        self.fields = {}
+        self.data = ''
+        self.field = ''
+        self.boxtype = 'Widevine data'
+        self.children = []
+
+        while pssh_index != len(pssh_payload):
+            pssh_field_descriptor = ord(pssh_payload[pssh_index:pssh_index+1])
+            pssh_index += 1
+            field = pssh_field_descriptor >> 3
+            if pssh_field_descriptor & 2 == 2:
+                field_length = unpackWidevineVarInt(pssh_payload[pssh_index:pssh_index+1])
+                data = pssh_payload[pssh_index+1:pssh_index+1+field_length]
+                pssh_index += (field_length + 1)
+            else:
+                data = str(unpackWidevineVarInt(pssh_payload[pssh_index:pssh_index+1]))
+                pssh_index += 1
+
+            if field == 1:
+                self.fields['version'] = data
+            elif field == 2:
+                self.fields['KID'] = uuid.UUID(bytes=data)
+            elif field == 3:
+                self.fields['provider'] = data
+            elif field == 4:
+                self.fields['content_id'] =  binascii.hexlify(data)
+            elif field == 5:
+                self.fields['track_type'] = data
+            elif field == 6:
+                self.fields['policy'] = data
+            elif field == 7:
+                self.fields['crypto_period_index'] = data
+            else:
+                raise Exception('Unknown field id in Widevine PSSH')
+
+    def generate_fields(self):
+        for f in self.fields:
+            yield (f, self.fields[f])
+#        yield ("KID", self.fields['KID'])
+#        for x in super(ProtectionHeader, self).generate_fields():
+#            yield x
+
+class PlayReadyPsshBox():
+
+    def __init__(self, pssh_payload):
+        pssh_index = 0
+        self.fields = {}
+        self.data = ''
+        self.field = ''
+        self.boxtype = 'PlayReady data'
+        self.children = []
+
+        pro_len = struct.unpack_from(str("<I"), pssh_payload[pssh_index:pssh_index+4])[0]
+        print "pro len = %d " % pro_len
+        pssh_index += 4
+        pro_count = struct.unpack_from(str("<H"), pssh_payload[pssh_index:pssh_index+2])[0]
+        print "pro count = %d " % pro_count
+        pssh_index += 2
+
+        pro_index = 1
+
+        while pro_index <= pro_count:
+            record_type = struct.unpack_from(str("<H"), pssh_payload[pssh_index:pssh_index+2])[0]
+            pssh_index += 2
+
+            record_length = struct.unpack_from(str("<H"), pssh_payload[pssh_index:pssh_index+2])[0]
+            pssh_index += 2
+
+            record_value = str(pssh_payload[pssh_index:pssh_index+record_length])
+            pssh_index += record_length
+
+            self.fields["Record %d" % pro_index] = record_value
+
+            pro_index += 1
+
+    def generate_fields(self):
+        for f in self.fields:
+            yield (f, self.fields[f])
+
+class FairPlayPsshBox():
+
+    def __init__(self, pssh_payload):
+        pssh_index = 0
+        self.fields = {}
+        self.data = ''
+        self.field = ''
+        self.boxtype = 'FairPlay data'
+        self.children = []
+# 4148ca0a88690b1fd586e5b9eebfd55e2d369763dc0b9a7118120eb3a03c7cbb
+# 5eec91efa94d15fea943fd4453a424fa7c8747266105826ccaf58b3141b1af32
+        self.fields['value'] = binascii.hexlify(pssh_payload)
+        return
+
+        while pssh_index != len(pssh_payload):
+            pssh_field_descriptor = ord(pssh_payload[pssh_index:pssh_index+1])
+            pssh_index += 1
+            field = pssh_field_descriptor >> 3
+            if pssh_field_descriptor & 2 == 2:
+                field_length = unpackWidevineVarInt(pssh_payload[pssh_index:pssh_index+1])
+                data = pssh_payload[pssh_index+1:pssh_index+1+field_length]
+                pssh_index += (field_length + 1)
+            else:
+                data = str(unpackWidevineVarInt(pssh_payload[pssh_index:pssh_index+1]))
+                pssh_index += 1
+
+            if field == 1:
+                self.fields['version'] = data
+            elif field == 2:
+                self.fields['KID'] = binascii.hexlify(data)
+            elif field == 3:
+                self.fields['provider'] = data
+            elif field == 4:
+                self.fields['content_id'] =  binascii.hexlify(data)
+            elif field == 6:
+                self.fields['policy'] = data
+            else:
+                raise Exception('Unknown field id in Widevine PSSH %d' % field)
+
+    def generate_fields(self):
+        for f in self.fields:
+            yield (f, self.fields[f])
+#        yield ("KID", self.fields['KID'])
+#        for x in super(ProtectionHeader, self).generate_fields():
+#            yield x
+
+
+class ProtectionHeader(box.Box):
+    def parse(self, buf):
+        super(ProtectionHeader, self).parse(buf)
+
+        self.version = buf.readint32()
+        self.system_id = binascii.hexlify(buf.readstr(16))
+        self.data_size = buf.readint32();
+        self.consumed_bytes += 24
+
+        if self.system_id == 'edef8ba979d64acea3c827dcd51d21ed':
+            pssh_payload = buf.readstr(self.data_size)
+            self.children.append(WidevinePsshBox(pssh_payload))
+        elif self.system_id == '29701fe43cc74a348c5bae90c7439a47':
+            pssh_payload = buf.readstr(self.data_size)
+            self.children.append(FairPlayPsshBox(pssh_payload))
+        elif self.system_id == '9a04f07998404286ab92e65be0885f95':
+            pssh_payload = buf.readstr(self.data_size)
+            self.children.append(PlayReadyPsshBox(pssh_payload))
+        else:
+            self.data = buf.readstr(self.data_size)
+
+
+    def generate_fields(self):
+#        for x in super(ProtectionHeader, self).generate_fields():
+#            yield x
+
+        yield ("version", self.version)
+        yield ("system id", self.system_id)
+        yield ("data size", self.data_size)
+        yield ("size", self.size)
+        if hasattr(self, 'data'):
+            yield ("data", self.data)
+
+def WidevineVarInt(value):
+    parts = [value % 128]
+    value >>= 7
+    while value:
+        parts.append(value%128)
+        value >>= 7
+    varint = ''
+    for i in range(len(parts)-1):
+        parts[i] |= (1<<7)
+    varint = ''
+    for x in parts:
+        varint += chr(x)
+    return varint
+
+def unpackWidevineVarInt(value):
+    parts = []
+    for x in value:
+        parts.append(ord(x))
+
+    for i in range(len(parts)-1):
+        parts[i] |= (1>>7)
+        parts[i] = parts[i]%128
+
+    varint = 0
+
+    for i in reversed(parts):
+        varint <<= 7
+        varint += i
+    return varint
 
 
 class HandlerBox(box.FullBox):

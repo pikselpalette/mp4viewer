@@ -30,6 +30,7 @@ class Box(object):
         'udta' : 'User data',
         'skip' : 'Skip',
         'free' : 'Free',
+        'pssh' : 'Protection System Specific Header',
     }
     container_boxes = [
         'moov', 'trak', 'edts', 'mdia', 'minf', 'dinf', 'stbl', 'mvex',
@@ -106,6 +107,7 @@ class Box(object):
             'stss' : movie.SyncSampleBox,
             'stsz' : movie.SampleSizeBox,
             'stz2' : movie.CompactSampleSizeBox,
+            'pssh' : movie.ProtectionHeader,
         }
         fourcc = buf.peekstr(4, 4)
         if fourcc in boxmap:
